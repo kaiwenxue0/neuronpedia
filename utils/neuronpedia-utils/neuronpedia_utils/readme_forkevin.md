@@ -28,7 +28,7 @@ self.model_id_path = MODEL_MAP[self.model_id]
 * 运行代码时，只需在参数中传入 `"Llama-3-8B"`
 * 调用 `HookedTransformer` 时，会自动映射为本地模型目录路径
 
-> ⚠ 提示：与 **Circuit-tracer** 一样，记得修改 `HookedTransformer` 代码，以支持该路径映射机制。
+> 提示：与 **Circuit-tracer** 一样，记得修改 `HookedTransformer` 代码，以支持该路径映射机制。
 
 ---
 
