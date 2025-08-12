@@ -80,15 +80,34 @@ python generate-dashboards-as-vectors.py \
 
 ## 5. 转换 Neuronpedia JSON 文件格式
 
-使用脚本`json_neuronpedia_to_current.py`，将 Neuronpedia 生成的特征 JSON 文件转换为所需的格式。
+使用脚本 **`json_neuronpedia_to_current.py`** 将 Neuronpedia 生成的特征 JSON 文件转换为当前所需格式。
 
 ```bash
-python json_neuronpedia_to_current.py --input-file [Example: batch-0.json] --output-dir converted_feature
-
+python json_neuronpedia_to_current.py \
+    --input-file batch-0.json \
+    --output-dir converted_feature
 ```
 
-## 6. 上传feature json文件至github
-
-
+* `--input-file`：Neuronpedia 输出的原始 JSON 文件（例如 `batch-0.json`）
+* `--output-dir`：转换后 JSON 文件的保存目录
 
 ---
+
+## 6. 上传 Feature JSON 文件至 GitHub
+
+仓库地址：
+[https://github.com/lt-0123/dashbroad](https://github.com/lt-0123/dashbroad)
+
+**建议的文件结构：**
+
+```
+./features/[Your model name]/[feature_id].json
+```
+
+**示例：**
+
+```
+./features/llama-3-8B/12000019.json
+```
+
+
