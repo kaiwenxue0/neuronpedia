@@ -7,18 +7,16 @@
 #
 # Example: Axbench
 #
-# python generate-dashboards.py \
+# python generate-dashboards-as-vectors.py \
 #     --creator-name='AxBench Team' \
 #     --release-id=axbench \
 #     --release-title='AxBench Paper' \
 #     --url=https://github.com/stanfordnlp/axbench \
-#     --model-name=gemma-2-2b-it \
+#     --model-name="Llama-3-8B" \   
 #     --model-dtype=bfloat16 \
 #     --neuronpedia-source-set-id=axbench-reft-r1-res-16k \
 #     --neuronpedia-source-set-description='Residual Stream - 16k' \
-#     --hf-weights-repo-id=pyvene/gemma-reft-r1-2b-it-res \
-#     --hf-weights-path=l20/weight.pt \
-#     --hook-point=hook_resid_pre \
+#     --hook-point=hook_mlp_out \
 #     --source-dtype=bfloat16 \
 #     --layer-num=20 \
 #     --prompts-huggingface-dataset-path=monology/pile-uncopyrighted \
@@ -26,8 +24,6 @@
 #     --n-tokens-in-prompt=128 \
 #     --n-prompts-per-batch=128 \
 #     --include-original-vectors-in-output \
-#     --prepend-chat-template-text='<bos><start_of_turn>user\nWrite me a random sentence.<end_of_turn>\n<start_of_turn>model\n' \
-#     --activation-thresholds-json-file=activation-thresholds.example.json
 
 
 import json
@@ -39,12 +35,12 @@ import gzip
 import typer
 import shutil
 from typing import Annotated
-from neuronpedia_utils.db_models.source_release import SourceRelease
-from neuronpedia_utils.db_models.model import Model
-from neuronpedia_utils.db_models.source_set import SourceSet
-from neuronpedia_utils.db_models.source import Source
-from neuronpedia_utils.db_models.activation import Activation
-from neuronpedia_utils.db_models.feature import Feature
+from db_models.source_release import SourceRelease
+from db_models.model import Model
+from db_models.source_set import SourceSet
+from db_models.source import Source
+from db_models.activation import Activation
+from db_models.feature import Feature
 import dotenv
 from enum import Enum
 from huggingface_hub import hf_hub_download
@@ -54,13 +50,18 @@ from sae_dashboard.neuronpedia.neuronpedia_vector_runner import (
     NeuronpediaVectorRunner,
     NeuronpediaVectorRunnerConfig,
 )
+from layer_dir_map import layer_dir_map, model_map
+from safetensors.torch import load_file
+from pathlib import Path
 
-dotenv.load_dotenv(".env.default")
+dotenv.load_dotenv(".env.example")
 dotenv.load_dotenv()
 
-OUTPUT_DIR = "./exports"
+ROOT_DIR = Path("/mnt/xuekaiwen")
+OUTPUT_DIR = ROOT_DIR / "exports"
+
 # directory used for intermediate outputs (from saedashboard, before conversion to neuronpedia format)
-INTERMEDIATE_OUTPUT_DIR = "./exports-processing"
+INTERMEDIATE_OUTPUT_DIR = ROOT_DIR / "exports-processing"
 
 creator_id = os.getenv("DEFAULT_CREATOR_ID")
 if creator_id is None or creator_id == "":
@@ -72,7 +73,7 @@ CUID_GENERATOR: Cuid = Cuid(length=25)
 
 created_at = datetime.now()
 
-CACHED_ACTIVATIONS_DIR = "./cached_activations"
+CACHED_ACTIVATIONS_DIR = ROOT_DIR / "cached_activations"
 
 
 class HOOK_POINT_TYPE_CHOICES(str, Enum):
@@ -88,12 +89,12 @@ class HOOK_POINT_TYPE_CHOICES(str, Enum):
 app = typer.Typer()
 
 
+
 def make_option(*option_names: str, help_text: str, **kwargs) -> Any:
     """Create a Typer Option with the same text for both help and prompt."""
     return typer.Option(
         *option_names,
         help=help_text,
-        prompt="\n" + help_text + "\n",
         **kwargs,
     )
 
@@ -157,20 +158,21 @@ def main(
             help_text="[Source] Neuronpedia Source Set Description: When this source set is displayed on Neuronpedia, this is the description that will be shown. Usually, it is a short human-readable hook and width for this source. Eg Residual Stream - 16k",
         ),
     ],
-    hf_weights_repo_id: Annotated[
-        str,
-        make_option(
-            "--hf-weights-repo-id",
-            help_text="[Source] HuggingFace Repository ID: Huggingface repository ID for your weights/data in the form [user]/[repo_id], NOT INCLUDING the folder. Eg 'google/gemma-scope-2b-pt-res'",
-        ),
-    ],
-    hf_weights_path: Annotated[
-        str,
-        make_option(
-            "--hf-weights-path",
-            help_text="[Source] HuggingFace Weights Path: Path to the weights on HuggingFace in the form 'layer_0/width_16k/average_l0_105/weights.pt'. Do not include the repo name.",
-        ),
-    ],
+    # hf_weights_repo_id: Annotated[
+    #     str,
+    #     make_option(
+    #         "--hf-weights-repo-id",
+    #         help_text="[Source] HuggingFace Repository ID: Huggingface repository ID for your weights/data in the form [user]/[repo_id], NOT INCLUDING the folder. Eg 'google/gemma-scope-2b-pt-res'",
+    #     ),
+    # ],
+    # hf_weights_path: Annotated[
+    #     str,
+    #     make_option(
+    #         "--hf-weights-path",
+    #         help_text="[Source] HuggingFace Weights Path: Path to the weights on HuggingFace in the form 'layer_0/width_16k/average_l0_105/weights.pt'. Do not include the repo name.",
+    #     ),
+    # ],
+    
     hook_point: Annotated[
         HOOK_POINT_TYPE_CHOICES,
         make_option(
@@ -249,7 +251,7 @@ def main(
     print("--------------------------------")
     print("Equivalent command is:")
 
-    command = "python generate-dashboards.py"
+    command = "python generate-dashboards-as-vectors.py"
     for name, value in ctx.params.items():
         if value is not None:
             if isinstance(value, bool):
@@ -268,13 +270,27 @@ def main(
             shutil.rmtree(CACHED_ACTIVATIONS_DIR)
 
         print("Downloading weights from HuggingFace...")
-        path_to_weights = hf_hub_download(
-            repo_id=hf_weights_repo_id, filename=hf_weights_path
-        )
-        if path_to_weights is None:
-            raise ValueError(
-                f"Failed to download weights at {hf_weights_repo_id}/{hf_weights_path} from HuggingFace. Please check that it is valid and that if needed, you've added your HF_TOKEN to the environment variables."
-            )
+        # path_to_weights = hf_hub_download(
+        #     repo_id=hf_weights_repo_id, filename=hf_weights_path
+        # )
+        # path_to_weights = hf_hub_download(repo_id=..., filename=...)
+        root_transcoder_path = "/mnt/xuekaiwen/models/transcoder/checkpoints/"
+        
+        if layer_num not in layer_dir_map:
+            raise ValueError(f"Invalid transcoder layer '{layer_num}' specified.")
+
+        layer_path = os.path.join(root_transcoder_path, layer_dir_map[layer_num], "sae.safetensors")
+
+        if not os.path.isfile(layer_path):
+            raise FileNotFoundError(f"Transcoder weights file not found at: {layer_path}")
+
+        path_to_weights = layer_path
+        print(f"Using local transcoder weights at: {path_to_weights}")
+        
+        # if path_to_weights is None:
+        #     raise ValueError(
+        #         f"Failed to download weights at {hf_weights_repo_id}/{hf_weights_path} from HuggingFace. Please check that it is valid and that if needed, you've added your HF_TOKEN to the environment variables."
+        #     )
 
         if activation_thresholds_json_file is not None:
             activation_thresholds = read_json_file(activation_thresholds_json_file)
@@ -299,9 +315,13 @@ def main(
         else:
             activation_thresholds = None
 
-        weights = torch.load(path_to_weights, weights_only=True)
 
+        weights = load_file(path_to_weights)
+        # weights = torch.load(path_to_weights, weights_only=True)
+
+        weights = weights["encoder.weight"]
         hook_point_name = f"blocks.{layer_num}.{hook_point.value}"
+
 
         vector_set = VectorSet(
             vectors=weights,
@@ -316,7 +336,8 @@ def main(
         intermediate_output_dir = (
             f"{INTERMEDIATE_OUTPUT_DIR}/{model_name}/{neuronpedia_source_set_id}"
         )
-        shutil.rmtree(intermediate_output_dir)
+        if os.path.exists(intermediate_output_dir):
+            shutil.rmtree(intermediate_output_dir)
         os.makedirs(intermediate_output_dir)
 
         print("Generating activations...")
@@ -351,8 +372,8 @@ def main(
         VECTOR_STEER_HOOK_NAME = hook_point.value
 
         # get the hf folder id from the hf weights path
-        hf_folder_id = "/".join(hf_weights_path.split("/")[:-1])
-
+        # hf_folder_id = "/".join(hf_weights_path.split("/")[:-1])
+        
         final_output_dir = ""
 
         intermediate_output_dir_subdir = os.path.join(
@@ -442,8 +463,8 @@ def main(
                     id=source_id,
                     num_prompts=n_prompts_total,
                     num_tokens_in_prompt=n_tokens_in_prompt,
-                    hfRepoId=hf_weights_repo_id,
-                    hfFolderId=hf_folder_id,
+                    hfRepoId=None,
+                    hfFolderId=None,
                     creatorId=DEFAULT_CREATOR_ID,
                 )
                 f.write(json.dumps(source.__dict__, default=datetime_handler) + "\n")
@@ -460,7 +481,6 @@ def main(
     except BaseException as e:
         print(f"\nError: {e}")
         print("\nTo run this job again, use this command (fixing any errors first):\n")
-
         print(command)
         raise typer.Abort()
 
