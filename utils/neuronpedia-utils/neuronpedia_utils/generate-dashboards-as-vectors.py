@@ -57,7 +57,7 @@ from pathlib import Path
 dotenv.load_dotenv(".env.example")
 dotenv.load_dotenv()
 
-ROOT_DIR = Path("/mnt/xuekaiwen")
+ROOT_DIR = Path("/mnt/workspace/xuekaiwen/mask_diffusion/interpretable_models")
 OUTPUT_DIR = ROOT_DIR / "exports"
 
 # directory used for intermediate outputs (from saedashboard, before conversion to neuronpedia format)

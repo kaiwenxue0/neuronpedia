@@ -49,6 +49,8 @@ ROOT_DIR = Path("/mnt/xuekaiwen")
 例如，生成 **第 20 层** 的特征：
 
 ```bash
+export HF_ENDPOINT=https://hf-mirror.com
+export DEFAULT_CREATOR_ID=007
 python generate-dashboards-as-vectors.py \
     --creator-name='AxBench Team' \
     --release-id=axbench \
