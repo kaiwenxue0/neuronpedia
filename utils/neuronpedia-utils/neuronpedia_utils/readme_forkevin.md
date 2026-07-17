@@ -60,9 +60,9 @@ python generate-dashboards-as-vectors.py \
     --model-dtype=bfloat16 \
     --neuronpedia-source-set-id=axbench-reft-r1-res-16k \
     --neuronpedia-source-set-description='Residual Stream - 16k' \
-    --hook-point=hook_mlp_out \
+    --hook-point=mlp.hook_in \
     --source-dtype=bfloat16 \
-    --layer-num=20 \
+    --layer-num=0 \
     --prompts-huggingface-dataset-path=monology/pile-uncopyrighted \
     --n-prompts-total=8192 \
     --n-tokens-in-prompt=128 \

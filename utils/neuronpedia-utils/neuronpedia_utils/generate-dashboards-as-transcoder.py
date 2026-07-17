@@ -7,26 +7,22 @@
 #
 # Example: Axbench
 #
-'''
-python generate-dashboards-as-vectors.py \
-    --creator-name='AxBench Team' \
-    --release-id=axbench \
-    --release-title='AxBench Paper' \
-    --url=https://github.com/stanfordnlp/axbench \
-    --model-name="Llama-3-8B" \
-    --model-dtype=bfloat16 \
-    --neuronpedia-source-set-id=debug-20251004-vector-promptnums\
-    --neuronpedia-source-set-description='Residual Stream - 16k' \
-    --hook-point=mlp.hook_in \
-    --source-dtype=bfloat16 \
-    --layer-num=0 \
-    --prompts-huggingface-dataset-path="wikimedia/wikipedia:20231101.en" \
-    --activation-thresholds-json-file=activation-thresholds-new.json \
-    --n-prompts-total=24576 \
-    --n-tokens-in-prompt=64 \
-    --n-prompts-per-batch=64 \
-    --include-original-vectors-in-output
-'''
+# python generate-dashboards-as-transcoder.py \
+#     --creator-name='AxBench Team' \
+#     --release-id=axbench \
+#     --release-title='AxBench Paper' \
+#     --url=https://github.com/stanfordnlp/axbench \
+#     --model-name="Llama-3-8B" \
+#     --model-dtype=bfloat16 \
+#     --neuronpedia-source-set-id=debug-20250930 \
+#     --neuronpedia-source-set-description='Residual Stream - 16k' \
+#     --hook-point=mlp.hook_in \
+#     --source-dtype=bfloat16 \
+#     --layer-num=0 \
+#     --prompts-huggingface-dataset-path=monology/pile-uncopyrighted \
+#     --n-prompts-total=8192 \
+#     --n-tokens-in-prompt=128 \
+#     --n-prompts-per-batch=128 
 
 
 import json
@@ -48,11 +44,9 @@ import dotenv
 from enum import Enum
 from huggingface_hub import hf_hub_download
 import torch
-from sae_dashboard.neuronpedia.vector_set import VectorSet
-from sae_dashboard.neuronpedia.neuronpedia_vector_runner import (
-    NeuronpediaVectorRunner,
-    NeuronpediaVectorRunnerConfig,
-)
+# modify
+from sae_dashboard.neuronpedia.neuronpedia_runner_config import NeuronpediaRunnerConfig
+from sae_dashboard.neuronpedia.neuronpedia_runner import NeuronpediaRunner
 from layer_dir_map import layer_dir_map, model_map
 from safetensors.torch import load_file
 from pathlib import Path
@@ -60,11 +54,11 @@ from pathlib import Path
 dotenv.load_dotenv(".env.example")
 dotenv.load_dotenv()
 
-# ROOT_DIR = Path("/home/notebook/code/group/xuekaiwen/mask_diffusion/interpretable_models")
-# OUTPUT_DIR = ROOT_DIR / "exports"
+ROOT_DIR = Path("/mnt/workspace/xuekaiwen/mask_diffusion/interpretable_models")
+OUTPUT_DIR = ROOT_DIR / "exports"
 
-# # directory used for intermediate outputs (from saedashboard, before conversion to neuronpedia format)
-# INTERMEDIATE_OUTPUT_DIR = ROOT_DIR / "exports-processing-debug"
+# directory used for intermediate outputs (from saedashboard, before conversion to neuronpedia format)
+INTERMEDIATE_OUTPUT_DIR = ROOT_DIR / "exports-processing"
 
 creator_id = os.getenv("DEFAULT_CREATOR_ID")
 if creator_id is None or creator_id == "":
@@ -76,6 +70,7 @@ CUID_GENERATOR: Cuid = Cuid(length=25)
 
 created_at = datetime.now()
 
+CACHED_ACTIVATIONS_DIR = ROOT_DIR / "cached_activations"
 
 
 class HOOK_POINT_TYPE_CHOICES(str, Enum):
@@ -225,13 +220,6 @@ def main(
             help_text="[Dashboard Gen Parameters] Prompts per Batch (performance): When generating activations, how many prompts should we show the GPU in parallel? This is constrained by GPU memory, using the default of 128 is a good starting point.",
         ),
     ] = 128,
-    include_original_vectors_in_output: Annotated[
-        bool,
-        make_option(
-            "--include-original-vectors-in-output/--no-include-original-vectors-in-output",
-            help_text="[Dashboard Gen Parameters] Include Original Vectors in Output: Whether to include the original vectors of each feature in the output. This will make your outputs larger, but will allow you to see the original vectors in the dashboard.",
-        ),
-    ] = True,
     prepend_chat_template_text: Annotated[
         Optional[str],
         make_option(
@@ -246,21 +234,7 @@ def main(
             help_text="[Optional] [Dashboard Gen Parameters] Activation Thresholds File: If you would like to disregard activation values that are below a certain threshold, you can provide a json file with a dictionary that maps from index (string) to threshold (float or int). Provide the path to that file here.",
         ),
     ] = None,
-    output_dir: Annotated[
-        Optional[str],
-        make_option(
-            "--output-dir",
-            help_text="[Optional] [Dashboard Gen Parameters]"
-        ),
-    ] = None,
 ):
-    
-    ROOT_DIR = Path("/home/notebook/code/group/xuekaiwen/mask_diffusion/interpretable_models")
-    # ROOT_DIR = Path(output_dir)
-    OUTPUT_DIR = ROOT_DIR / f"exports-layer-{layer_num}"
-    INTERMEDIATE_OUTPUT_DIR = ROOT_DIR / f"exports-processing-layer-{layer_num}"
-    CACHED_ACTIVATIONS_DIR = ROOT_DIR / f"cached_activations-layer-{layer_num}"
-    
     print("Running with arguments:\n")
     for param, value in ctx.params.items():
         print(f"{param}: {value}")
@@ -292,10 +266,12 @@ def main(
         # )
         # path_to_weights = hf_hub_download(repo_id=..., filename=...)
         root_transcoder_path = "/mnt/xuekaiwen/models/transcoder/checkpoints/"
+        
         if layer_num not in layer_dir_map:
             raise ValueError(f"Invalid transcoder layer '{layer_num}' specified.")
 
         layer_path = os.path.join(root_transcoder_path, layer_dir_map[layer_num], "sae.safetensors")
+
         if not os.path.isfile(layer_path):
             raise FileNotFoundError(f"Transcoder weights file not found at: {layer_path}")
 
@@ -338,15 +314,15 @@ def main(
         hook_point_name = f"blocks.{layer_num}.{hook_point.value}"
 
 
-        vector_set = VectorSet(
-            vectors=weights,
-            hook_point=hook_point_name,
-            hook_layer=layer_num,
-            model_name=model_name,
-            hook_head_index=None,
-            names=[],
-            prepend_bos=False,
-        )
+        # vector_set = VectorSet(
+        #     vectors=weights,
+        #     hook_point=hook_point_name,
+        #     hook_layer=layer_num,
+        #     model_name=model_name,
+        #     hook_head_index=None,
+        #     names=[],
+        #     prepend_bos=False,
+        # )
 
         intermediate_output_dir = (
             f"{INTERMEDIATE_OUTPUT_DIR}/{model_name}/{neuronpedia_source_set_id}"
@@ -357,26 +333,24 @@ def main(
 
         print("Generating activations...")
 
-        runner_config = NeuronpediaVectorRunnerConfig(
+        # modify
+        runner_config = NeuronpediaRunnerConfig(
+            sae_set="llama-3-8b-transcoder",
+            sae_path=layer_dir_map[layer_num],
+            model_id=model_name,
             outputs_dir=intermediate_output_dir,
+            from_local_sae=True,  ## 用local的方式加载不需要sae_set
             huggingface_dataset_path=prompts_huggingface_dataset_path,
-            vector_dtype=source_dtype,
-            model_dtype=model_dtype,
             n_prompts_total=n_prompts_total,
             n_tokens_in_prompt=n_tokens_in_prompt,
             n_prompts_in_forward_pass=n_prompts_per_batch,
-            n_vectors_at_a_time=n_prompts_per_batch,
+            n_features_at_a_time=n_prompts_per_batch,
             use_wandb=False,
-            include_original_vectors_in_output=include_original_vectors_in_output,
-            prepend_chat_template_text=(
-                prepend_chat_template_text.replace("\\n", "\n")
-                if prepend_chat_template_text is not None
-                else None
-            ),
-            activation_thresholds=activation_thresholds,
+            use_transcoder=True,
         )
-
-        runner = NeuronpediaVectorRunner(vector_set, runner_config)
+        print("1")
+        runner = NeuronpediaRunner(runner_config)
+        print("2")
         runner.run()
 
         print("Activations generated successfully.")
